@@ -8,7 +8,13 @@ from jaxtyping import Float, Int
 import numpy.typing as npt
 import torch
 from torch import Tensor
-
+import regex as re
+import multiprocessing as mp
+from functools import partial
+import cProfile
+import pstats
+import io
+from pstats import SortKey
 
 
 def run_linear(
@@ -25,7 +31,7 @@ def run_linear(
         out_dim (int): The size of the output dimension
         weights (Float[Tensor, "d_out d_in"]): The linear weights to use
         in_features (Float[Tensor, "... d_in"]): The output tensor to apply the function to
-    
+
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
@@ -47,7 +53,7 @@ def run_embedding(
         d_model (int): The size of the embedding dimension
         weights (Float[Tensor, "vocab_size d_model"]): The embedding vectors to fetch from
         token_ids (Int[Tensor, "..."]): The set of token ids to fetch from the Embedding layer
-    
+
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
@@ -561,31 +567,272 @@ def get_tokenizer(
     raise NotImplementedError
 
 
+def process_chunk(chunk_data, special_tokens, PAT):
+    """Process a single chunk of data and return its token frequencies."""
+    start, end, file_path = chunk_data
+    with open(file_path, "rb") as f:
+        f.seek(start)
+        chunk = f.read(end - start).decode("utf-8", errors="ignore")
+
+    # Create regex pattern for special tokens
+    special_tokens_pattern = "|".join(
+        re.escape(token) for token in special_tokens)
+
+    # Split the chunk by special tokens
+    segments = re.split(f"({special_tokens_pattern})", chunk)
+
+    # Count token frequencies
+    token_freq = {}
+    special_token_bytes = {token.encode('utf-8') for token in special_tokens}
+
+    # Process each segment
+    for segment in segments:
+        # Skip empty segments
+        if not segment:
+            continue
+
+        # If the segment is a special token, skip it
+        if segment in special_tokens:
+            continue
+
+        # Run pre-tokenization on segment
+        matches = re.finditer(PAT, segment)
+
+        for match_token in matches:
+            token = match_token.group(0)
+            token_bytes = token.encode('utf-8')
+            if token_bytes in special_token_bytes:
+                continue
+            token_tuple = tuple(bytes([b]) for b in token_bytes)
+            token_freq[token_tuple] = token_freq.get(token_tuple, 0) + 1
+
+    return token_freq
+
+
 def run_train_bpe(
     input_path: str | os.PathLike,
     vocab_size: int,
     special_tokens: list[str],
     **kwargs,
 ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
-    """Given the path to an input corpus, run train a BPE tokenizer and
-    output its vocabulary and merges.
+    # # Create a Profile object
+    # profiler = cProfile.Profile()
+
+    # # Start profiling
+    # profiler.enable()
+
+    try:
+        PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+        # construct Vocabulary
+        vocab = {}
+        # Add bytes 0-255 to vocabulary
+        for i in range(256):
+            vocab[i] = bytes([i])
+
+        # Add special tokens to vocabulary starting from ID 256
+        current_id = 256
+        for token in special_tokens:
+            vocab[current_id] = token.encode('utf-8')
+            current_id += 1
+
+        # Get boundaries first
+        with open(input_path, "rb") as f:
+            boundaries = find_chunk_boundaries(
+                f, mp.cpu_count(), "<|endoftext|>".encode("utf-8"))
+
+            # Prepare chunk data for multiprocessing
+            chunk_data = [(start, end, str(input_path))
+                          for start, end in zip(boundaries[:-1], boundaries[1:])]
+
+            # Create a partial function with fixed arguments
+            process_chunk_partial = partial(
+                process_chunk,
+                special_tokens=special_tokens,
+                PAT=PAT
+            )
+
+            # Use multiprocessing to process chunks in parallel
+            with mp.Pool() as pool:
+                chunk_freqs = pool.map(process_chunk_partial, chunk_data)
+
+            # Merge token frequencies from all chunks
+            token_freq = {}
+            for chunk_freq in chunk_freqs:
+                for token, freq in chunk_freq.items():
+                    token_freq[token] = token_freq.get(token, 0) + freq
+
+            # Initialize pair frequency cache
+            pair_freq_cache = {}
+            # Initial count of all adjacent pairs
+            for token, freq in token_freq.items():
+                for i in range(len(token) - 1):
+                    pair = (token[i], token[i + 1])
+                    pair_freq_cache[pair] = pair_freq_cache.get(pair, 0) + freq
+
+            # Initialize substring frequency cache
+            substring_freq_cache = {}
+            # Initial count of all substrings
+            for token, freq in token_freq.items():
+                for i in range(len(token)):
+                    for j in range(i + 1, len(token) + 1):
+                        substring = b''.join(token[i:j])
+                        substring_freq_cache[substring] = substring_freq_cache.get(
+                            substring, 0) + freq
+            # Perform merges until vocabulary size is reached
+            all_merges = []
+            while len(vocab) < vocab_size:
+                token_freq, vocab, current_id, merges, pair_freq_cache, substring_freq_cache = perform_merge(
+                    token_freq, vocab, current_id, pair_freq_cache, substring_freq_cache)
+                if not merges:  # If no more merges possible
+                    break
+                all_merges.extend(merges)
+
+        return vocab, all_merges
+
+    finally:
+        # Stop profiling
+        # profiler.disable()
+
+        # # Create a stream for the stats
+        # s = io.StringIO()
+
+        # # Create a Stats object and sort by cumulative time
+        # ps = pstats.Stats(profiler, stream=s).sort_stats(SortKey.CUMULATIVE)
+
+        # # Print the stats
+        # ps.print_stats(30)  # Print top 30 functions by cumulative time
+
+        # # Print the stats to console
+        # print("\nPerformance Profile:")
+        # print(s.getvalue())
+        print("profile disabled")
+
+
+def perform_merge(
+    token_freq: dict[tuple[bytes, ...], int],
+    vocab: dict[int, bytes],
+    current_id: int,
+    pair_freq_cache: dict[tuple[bytes, bytes], int],
+    substring_freq_cache: dict[bytes, int]
+) -> tuple[dict[tuple[bytes, ...], int], dict[int, bytes], int, list[tuple[bytes, bytes]], dict[tuple[bytes, bytes], int], dict[bytes, int]]:
+    """
+    Perform one round of BPE merge operation with efficient substring frequency caching.
 
     Args:
-        input_path (str | os.PathLike): Path to BPE tokenizer training data.
-        vocab_size (int): Total number of items in the tokenizer's vocabulary (including special tokens).
-        special_tokens (list[str]): A list of string special tokens to be added to the tokenizer vocabulary.
-            These strings will never be split into multiple tokens, and will always be
-            kept as a single token. If these special tokens occur in the `input_path`,
-            they are treated as any other string.
+        token_freq: Dictionary mapping tokens (as tuples of bytes) to their frequencies
+        vocab: Current vocabulary dictionary
+        current_id: Current vocabulary ID to use for new tokens
+        pair_freq_cache: Cache of pair frequencies that persists between merges
+        substring_freq_cache: Cache of substring frequencies for efficient merging
 
     Returns:
-        tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
-            vocab:
-                The trained tokenizer vocabulary, a mapping from int (token ID in the vocabulary)
-                to bytes (token bytes)
-            merges:
-                BPE merges. Each list item is a tuple of bytes (<token1>, <token2>),
-                representing that <token1> was merged with <token2>.
-                Merges are ordered by order of creation.
+        tuple containing:
+        - Updated token frequencies
+        - Updated vocabulary
+        - Next available vocabulary ID
+        - List of merge operations performed
+        - Updated pair frequency cache
+        - Updated substring frequency cache
     """
-    raise NotImplementedError
+    if not pair_freq_cache:
+        return token_freq, vocab, current_id, [], pair_freq_cache, substring_freq_cache
+
+    # Find the most frequent pair
+    most_freq_pair = max(pair_freq_cache.items(), key=lambda x: (x[1], x[0]))
+    merges = [most_freq_pair[0]]
+
+    # Add the merged token to vocabulary
+    merged_token = most_freq_pair[0][0] + most_freq_pair[0][1]
+    vocab[current_id] = merged_token
+    current_id += 1
+
+    # Update pair frequencies based on the substring frequency cache
+    # Update pair_freq_cache
+    new_pair_freq = {}
+    for pair, freq in pair_freq_cache.items():
+        if pair == most_freq_pair[0]:
+            # Skip the pair that was just merged
+            continue
+        # case0: If current pair's first byte matches the second byte of the most frequent pair
+        # Example: if most_freq_pair is (s,t) and current pair is (t,c), create new pair (st,c)
+        elif pair[0] == most_freq_pair[0][1]:
+            new_pair = (merged_token, pair[1])
+            new_pair_bytes = b''.join(new_pair)
+            new_freq = substring_freq_cache.get(new_pair_bytes, 0)
+            if new_freq > 0:
+                new_pair_freq[new_pair] = new_freq
+            else:
+                new_pair_freq[pair] = freq
+        # case1: If current pair's second byte matches the first byte of the most frequent pair
+        # Example: if most_freq_pair is (s,t) and current pair is (e,s), create new pair (e,st)
+        elif pair[1] == most_freq_pair[0][0]:
+            new_pair = (pair[0], merged_token)
+            new_pair_bytes = b''.join(new_pair)
+            new_freq = substring_freq_cache.get(new_pair_bytes, 0)
+            if new_freq > 0:
+                new_pair_freq[new_pair] = new_freq
+            else:
+                new_pair_freq[pair] = freq
+        else:
+            # Keep other pairs unchanged
+            new_pair_freq[pair] = freq
+
+    return token_freq, vocab, current_id, merges, new_pair_freq, substring_freq_cache
+
+
+def find_chunk_boundaries(
+    file: BinaryIO,
+    desired_num_chunks: int,
+    split_special_token: bytes
+) -> list[int]:
+    """
+    Chunk the file into parts that can be counted independently.
+    May return fewer chunks if the boundaries end up overlapping.
+    """
+    assert isinstance(split_special_token, bytes), (
+        "Must represent special token as a bytestring"
+    )
+
+    # Get total file size in bytes
+    file.seek(0, os.SEEK_END)
+    file_size = file.tell()
+    file.seek(0)
+
+    chunk_size = file_size // desired_num_chunks
+
+    # Initial guesses for chunk boundary locations, uniformly spaced
+    # Chunks start on previous index, don't include last index
+    chunk_boundaries = [i * chunk_size for i in range(desired_num_chunks + 1)]
+    chunk_boundaries[-1] = file_size
+
+    mini_chunk_size = 4096  # Read ahead by 4k bytes at a time
+
+    for bi in range(1, len(chunk_boundaries) - 1):
+        initial_position = chunk_boundaries[bi]
+        file.seek(initial_position)  # Start at boundary guess
+        while True:
+            mini_chunk = file.read(mini_chunk_size)  # Read a mini chunk
+
+            # If EOF, this boundary should be at the end of the file
+            if mini_chunk == b"":
+                chunk_boundaries[bi] = file_size
+                break
+
+            # Find the special token in the mini chunk
+            found_at = mini_chunk.find(split_special_token)
+            if found_at != -1:
+                chunk_boundaries[bi] = initial_position + found_at
+                break
+            initial_position += mini_chunk_size
+
+    # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
+    return sorted(set(chunk_boundaries))
+
+
+if __name__ == "__main__":
+    vocab, merges = run_train_bpe(
+        input_path="tests/fixtures/corpus.en",
+        special_tokens=["<|endoftext|>"],
+        vocab_size=500
+    )
+    print(merges)
