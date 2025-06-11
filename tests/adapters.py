@@ -15,6 +15,14 @@ import cProfile
 import pstats
 import io
 from pstats import SortKey
+import json
+import time
+
+# Global configuration
+CONFIG = {
+    'enable_profiling': False,  # Control whether to enable cProfile
+    'profile_stats_count': 30,  # Number of top functions to show in profile
+}
 
 
 def run_linear(
@@ -615,11 +623,12 @@ def run_train_bpe(
     special_tokens: list[str],
     **kwargs,
 ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
-    # # Create a Profile object
-    # profiler = cProfile.Profile()
+    # Create a Profile object if profiling is enabled
+    profiler = cProfile.Profile() if CONFIG['enable_profiling'] else None
 
-    # # Start profiling
-    # profiler.enable()
+    # Start profiling if enabled
+    if profiler:
+        profiler.enable()
 
     try:
         PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
@@ -669,20 +678,11 @@ def run_train_bpe(
                     pair = (token[i], token[i + 1])
                     pair_freq_cache[pair] = pair_freq_cache.get(pair, 0) + freq
 
-            # Initialize substring frequency cache
-            substring_freq_cache = {}
-            # Initial count of all substrings
-            for token, freq in token_freq.items():
-                for i in range(len(token)):
-                    for j in range(i + 1, len(token) + 1):
-                        substring = b''.join(token[i:j])
-                        substring_freq_cache[substring] = substring_freq_cache.get(
-                            substring, 0) + freq
             # Perform merges until vocabulary size is reached
             all_merges = []
             while len(vocab) < vocab_size:
-                token_freq, vocab, current_id, merges, pair_freq_cache, substring_freq_cache = perform_merge(
-                    token_freq, vocab, current_id, pair_freq_cache, substring_freq_cache)
+                token_freq, vocab, current_id, merges, pair_freq_cache = perform_merge(
+                    token_freq, vocab, current_id, pair_freq_cache)
                 if not merges:  # If no more merges possible
                     break
                 all_merges.extend(merges)
@@ -690,94 +690,92 @@ def run_train_bpe(
         return vocab, all_merges
 
     finally:
-        # Stop profiling
-        # profiler.disable()
-
-        # # Create a stream for the stats
-        # s = io.StringIO()
-
-        # # Create a Stats object and sort by cumulative time
-        # ps = pstats.Stats(profiler, stream=s).sort_stats(SortKey.CUMULATIVE)
-
-        # # Print the stats
-        # ps.print_stats(30)  # Print top 30 functions by cumulative time
-
-        # # Print the stats to console
-        # print("\nPerformance Profile:")
-        # print(s.getvalue())
-        print("profile disabled")
+        # Stop profiling and print stats if enabled
+        if profiler:
+            profiler.disable()
+            s = io.StringIO()
+            ps = pstats.Stats(profiler, stream=s).sort_stats(
+                SortKey.CUMULATIVE)
+            ps.print_stats(CONFIG['profile_stats_count'])
+            print("\nPerformance Profile:")
+            print(s.getvalue())
 
 
 def perform_merge(
     token_freq: dict[tuple[bytes, ...], int],
     vocab: dict[int, bytes],
     current_id: int,
-    pair_freq_cache: dict[tuple[bytes, bytes], int],
-    substring_freq_cache: dict[bytes, int]
-) -> tuple[dict[tuple[bytes, ...], int], dict[int, bytes], int, list[tuple[bytes, bytes]], dict[tuple[bytes, bytes], int], dict[bytes, int]]:
-    """
-    Perform one round of BPE merge operation with efficient substring frequency caching.
-
-    Args:
-        token_freq: Dictionary mapping tokens (as tuples of bytes) to their frequencies
-        vocab: Current vocabulary dictionary
-        current_id: Current vocabulary ID to use for new tokens
-        pair_freq_cache: Cache of pair frequencies that persists between merges
-        substring_freq_cache: Cache of substring frequencies for efficient merging
-
-    Returns:
-        tuple containing:
-        - Updated token frequencies
-        - Updated vocabulary
-        - Next available vocabulary ID
-        - List of merge operations performed
-        - Updated pair frequency cache
-        - Updated substring frequency cache
-    """
+    pair_freq_cache: dict[tuple[bytes, bytes], int]
+) -> tuple[dict[tuple[bytes, ...], int], dict[int, bytes], int, list[tuple[bytes, bytes]], dict[tuple[bytes, bytes], int]]:
     if not pair_freq_cache:
-        return token_freq, vocab, current_id, [], pair_freq_cache, substring_freq_cache
+        return token_freq, vocab, current_id, [], pair_freq_cache
 
     # Find the most frequent pair
     most_freq_pair = max(pair_freq_cache.items(), key=lambda x: (x[1], x[0]))
     merges = [most_freq_pair[0]]
+    first_token, second_token = most_freq_pair[0]
 
     # Add the merged token to vocabulary
-    merged_token = most_freq_pair[0][0] + most_freq_pair[0][1]
+    merged_token = first_token + second_token
     vocab[current_id] = merged_token
     current_id += 1
 
-    # Update pair frequencies based on the substring frequency cache
-    # Update pair_freq_cache
-    new_pair_freq = {}
-    for pair, freq in pair_freq_cache.items():
-        if pair == most_freq_pair[0]:
-            # Skip the pair that was just merged
-            continue
-        # case0: If current pair's first byte matches the second byte of the most frequent pair
-        # Example: if most_freq_pair is (s,t) and current pair is (t,c), create new pair (st,c)
-        elif pair[0] == most_freq_pair[0][1]:
-            new_pair = (merged_token, pair[1])
-            new_pair_bytes = b''.join(new_pair)
-            new_freq = substring_freq_cache.get(new_pair_bytes, 0)
-            if new_freq > 0:
-                new_pair_freq[new_pair] = new_freq
-            else:
-                new_pair_freq[pair] = freq
-        # case1: If current pair's second byte matches the first byte of the most frequent pair
-        # Example: if most_freq_pair is (s,t) and current pair is (e,s), create new pair (e,st)
-        elif pair[1] == most_freq_pair[0][0]:
-            new_pair = (pair[0], merged_token)
-            new_pair_bytes = b''.join(new_pair)
-            new_freq = substring_freq_cache.get(new_pair_bytes, 0)
-            if new_freq > 0:
-                new_pair_freq[new_pair] = new_freq
-            else:
-                new_pair_freq[pair] = freq
-        else:
-            # Keep other pairs unchanged
-            new_pair_freq[pair] = freq
+    # Update token frequencies and pair frequencies
+    new_token_freq = {}
+    new_pair_freq_cache = pair_freq_cache.copy()
 
-    return token_freq, vocab, current_id, merges, new_pair_freq, substring_freq_cache
+    # Remove the frequency of the merged pair
+    del new_pair_freq_cache[most_freq_pair[0]]
+
+    # Process each token sequence
+    for token_seq, freq in token_freq.items():
+        new_seq = []
+        i = 0
+        while i < len(token_seq):
+            if i < len(token_seq) - 1 and token_seq[i] == first_token and token_seq[i + 1] == second_token:
+                # Update pair frequencies for the new token
+                if i > 0:
+                    # Handle the pair before the merge
+                    prev_token = token_seq[i - 1]
+                    # Remove old pair frequency
+                    old_prev_pair = (prev_token, first_token)
+                    if old_prev_pair in new_pair_freq_cache:
+                        new_pair_freq_cache[old_prev_pair] -= freq
+                        if new_pair_freq_cache[old_prev_pair] <= 0:
+                            del new_pair_freq_cache[old_prev_pair]
+                    # Add new pair frequency
+                    new_prev_pair = (prev_token, merged_token)
+                    new_pair_freq_cache[new_prev_pair] = new_pair_freq_cache.get(
+                        new_prev_pair, 0) + freq
+
+                if i < len(token_seq) - 2:
+                    # Handle the pair after the merge
+                    next_token = token_seq[i + 2]
+                    # Remove old pair frequency
+                    old_next_pair = (second_token, next_token)
+                    if old_next_pair in new_pair_freq_cache:
+                        new_pair_freq_cache[old_next_pair] -= freq
+                        if new_pair_freq_cache[old_next_pair] <= 0:
+                            del new_pair_freq_cache[old_next_pair]
+                    # Add new pair frequency
+                    new_next_pair = (merged_token, next_token)
+                    new_pair_freq_cache[new_next_pair] = new_pair_freq_cache.get(
+                        new_next_pair, 0) + freq
+
+                new_seq.append(merged_token)
+                i += 2
+            else:
+                new_seq.append(token_seq[i])
+                i += 1
+
+        # Update token frequency
+        new_seq = tuple(new_seq)
+        if new_seq in new_token_freq:
+            new_token_freq[new_seq] += freq
+        else:
+            new_token_freq[new_seq] = freq
+
+    return new_token_freq, vocab, current_id, merges, new_pair_freq_cache
 
 
 def find_chunk_boundaries(
@@ -829,10 +827,93 @@ def find_chunk_boundaries(
     return sorted(set(chunk_boundaries))
 
 
-if __name__ == "__main__":
+def testcase1():
+    # Enable profiling for this test
+    CONFIG['enable_profiling'] = True
+
+    start_time = time.time()
     vocab, merges = run_train_bpe(
         input_path="tests/fixtures/corpus.en",
         special_tokens=["<|endoftext|>"],
         vocab_size=500
     )
-    print(merges)
+    elapsed = time.time() - start_time
+    print(f"run_train_bpe elapsed time: {elapsed:.2f} seconds")
+    # Save vocab and merges
+    save_vocab_and_merges(vocab, merges, "vocab.json", "merges.txt")
+    print("Saved vocab and merges to local files")
+
+    # Disable profiling after test
+    CONFIG['enable_profiling'] = False
+
+
+def testcase3():
+    # Enable profiling for this test
+    CONFIG['enable_profiling'] = True
+
+    start_time = time.time()
+    vocab, merges = run_train_bpe(
+        input_path="data/TinyStoriesV2-GPT4-train.txt",
+        special_tokens=["<|endoftext|>"],
+        vocab_size=10000
+    )
+    elapsed = time.time() - start_time
+    print(f"run_train_bpe elapsed time: {elapsed:.2f} seconds")
+    # Save vocab and merges
+    save_vocab_and_merges(vocab, merges, "vocab.json", "merges.txt")
+    print("Saved vocab and merges to local files")
+
+    # Disable profiling after test
+    CONFIG['enable_profiling'] = False
+
+
+def testcase2():
+    # Enable profiling for this test
+    CONFIG['enable_profiling'] = True
+
+    start_time = time.time()
+    vocab, merges = run_train_bpe(
+        input_path="data/verify.txt",
+        special_tokens=["<|endoftext|>"],
+        vocab_size=263
+    )
+    elapsed = time.time() - start_time
+    print(f"run_train_bpe elapsed time: {elapsed:.2f} seconds")
+    # Save vocab and merges
+    save_vocab_and_merges(vocab, merges, "vocab.json", "merges.txt")
+    print("Saved vocab and merges to local files")
+
+    # Disable profiling after test
+    CONFIG['enable_profiling'] = False
+
+
+def save_vocab_and_merges(vocab: dict[int, bytes], merges: list[tuple[bytes, bytes]], vocab_path: str, merges_path: str):
+    """
+    Save vocabulary and merges to local files.
+
+    Args:
+        vocab: Dictionary mapping token IDs to token bytes
+        merges: List of merge operations
+        vocab_path: Path to save vocabulary JSON file
+        merges_path: Path to save merges text file
+    """
+    # Convert bytes to strings for JSON serialization
+    vocab_json = {str(k): v.decode('utf-8', errors='replace')
+                  for k, v in vocab.items()}
+
+    # Save vocabulary as JSON
+    with open(vocab_path, 'w', encoding='utf-8') as f:
+        json.dump(vocab_json, f, ensure_ascii=False, indent=2)
+
+    # Save merges as text file
+    with open(merges_path, 'w', encoding='utf-8') as f:
+        for merge in merges:
+            # Convert bytes to strings and join with space
+            merge_str = ' '.join(token.decode(
+                'utf-8', errors='replace') for token in merge)
+            f.write(merge_str + '\n')
+
+
+if __name__ == "__main__":
+
+    testcase3()
