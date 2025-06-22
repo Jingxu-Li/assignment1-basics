@@ -9,7 +9,7 @@ class MyBpeTokenizer:
         self.vocab = vocab
         self.merges = merges
         self.special_tokens = special_tokens
-
+        self.token_tuple_result_cache = {}
         # 将special_tokens添加到vocab中
         if special_tokens:
             max_key = max(self.vocab.keys())
@@ -74,23 +74,20 @@ class MyBpeTokenizer:
             token_result = []
 
             for token in tokens:
-                token_bytes = token.encode('utf-8')
-                token_tuple = tuple(bytes([b]) for b in token_bytes)
-                for merge in self.merges:
-                    # 如果token_tuple中存在merge，则替换为merge
-                    for i in range(len(token_tuple)-1):
-                        if token_tuple[i:i+2] == merge:
-                            token_tuple = token_tuple[:i] + \
-                                (b''.join(merge),) + token_tuple[i+2:]
-
-                token_result.append(token_tuple)
-
-            for token_tuple in token_result:
+                if token in self.token_tuple_result_cache:
+                    token_tuple = self.token_tuple_result_cache[token]
+                else:
+                    token_bytes = token.encode('utf-8')
+                    token_tuple = tuple(bytes([b]) for b in token_bytes)
+                    for merge in self.merges:
+                        # 如果token_tuple中存在merge，则替换为merge
+                        for i in range(len(token_tuple)-1):
+                            if token_tuple[i:i+2] == merge:
+                                token_tuple = token_tuple[:i] + \
+                                    (b''.join(merge),) + token_tuple[i+2:]
+                    self.token_tuple_result_cache[token] = token_tuple
                 for token in token_tuple:
-                    if token in self.token_to_id:
-                        result.append(int(self.token_to_id.get(token)))
-                    else:
-                        result.append(token)
+                    result.append(int(self.token_to_id.get(token)))
         return result
 
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
@@ -104,10 +101,7 @@ class MyBpeTokenizer:
     def decode(self, ids: list[int]) -> str:
         res = b''
         for id in ids:
-            if id in self.vocab:
-                res += self.vocab[id]
-            else:
-                res += id
+            res += self.vocab[id]
         return res.decode('utf-8', errors='replace')
 
 
