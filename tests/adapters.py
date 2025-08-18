@@ -18,7 +18,12 @@ from pstats import SortKey
 import json
 import time
 
+from cs336_basics.RotaryPositionalEmbedding import RotaryPositionalEmbedding
+from cs336_basics.myEmbedding import MyEmbedding
 from cs336_basics.bpe_tokenizer import MyBpeTokenizer
+from cs336_basics.myLinear import MyLinear
+from cs336_basics.MyAttention import run_scaled_dot_product_attention as my_run_scaled_dot_product_attention
+from cs336_basics.MyMultiheadAttention import run_multihead_self_attention as my_run_multihead_self_attention, run_multihead_self_attention_with_rope as my_run_multihead_self_attention_with_rope
 
 # Global configuration
 CONFIG = {
@@ -46,7 +51,9 @@ def run_linear(
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
 
-    raise NotImplementedError
+    my_linear = MyLinear(d_in, d_out)
+    my_linear.weight.data = weights
+    return my_linear(in_features)
 
 
 def run_embedding(
@@ -68,7 +75,9 @@ def run_embedding(
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
 
-    raise NotImplementedError
+    myEmbedding = MyEmbedding(vocab_size, d_model)
+    myEmbedding.weight.data = weights
+    return myEmbedding.forward(token_ids)
 
 
 def run_swiglu(
@@ -100,7 +109,12 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+    from cs336_basics.MySwiGLU import SwiGLU
+    swiglu = SwiGLU(d_model, d_ff, in_features)
+    swiglu.w1_weight.data = w1_weight
+    swiglu.w2_weight.data = w2_weight
+    swiglu.w3_weight.data = w3_weight
+    return swiglu.forward(in_features)
 
 
 def run_scaled_dot_product_attention(
@@ -121,18 +135,18 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    return my_run_scaled_dot_product_attention(Q, K, V, mask)
 
 
 def run_multihead_self_attention(
     d_model: int,
     num_heads: int,
-    q_proj_weight: Float[Tensor, " d_k d_in"],
-    k_proj_weight: Float[Tensor, " d_k d_in"],
-    v_proj_weight: Float[Tensor, " d_v d_in"],
-    o_proj_weight: Float[Tensor, " d_model d_v"],
-    in_features: Float[Tensor, " ... sequence_length d_in"],
-) -> Float[Tensor, " ... sequence_length d_out"]:
+    q_proj_weight: Float[Tensor, " d_model d_model"],
+    k_proj_weight: Float[Tensor, " d_model d_model"],
+    v_proj_weight: Float[Tensor, " d_model d_model"],
+    o_proj_weight: Float[Tensor, " d_model d_model"],
+    in_features: Float[Tensor, " ... sequence_length d_model"],
+) -> Float[Tensor, " ... sequence_length d_model"]:
     """
     Given the key, query, and value projection weights of a naive unbatched
     implementation of multi-head attention, return the output of an optimized batched
@@ -145,17 +159,25 @@ def run_multihead_self_attention(
         d_model (int): Dimensionality of the feedforward input and output.
         num_heads (int): Number of heads to use in multi-headed attention.
         max_seq_len (int): Maximum sequence length to pre-cache if your implementation does that.
-        q_proj_weight (Float[Tensor, "d_k d_in"]): Weights for the Q projection
-        k_proj_weight (Float[Tensor, "d_k d_in"]): Weights for the K projection
-        v_proj_weight (Float[Tensor, "d_k d_in"]): Weights for the V projection
-        o_proj_weight (Float[Tensor, "d_model d_v"]): Weights for the output projection
-        in_features (Float[Tensor, "... sequence_length d_in"]): Tensor to run your implementation on.
+        q_proj_weight (Float[Tensor, "d_model d_model"]): Weights for the Q projection
+        k_proj_weight (Float[Tensor, "d_model d_model"]): Weights for the K projection
+        v_proj_weight (Float[Tensor, "d_model d_model"]): Weights for the V projection
+        o_proj_weight (Float[Tensor, "d_model d_model"]): Weights for the output projection
+        in_features (Float[Tensor, "... sequence_length d_model"]): Tensor to run your implementation on.
 
     Returns:
-        Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
+        Float[Tensor, " ... sequence_length d_model"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    return my_run_multihead_self_attention(
+        d_model=d_model,
+        num_heads=num_heads,
+        q_proj_weight=q_proj_weight,
+        k_proj_weight=k_proj_weight,
+        v_proj_weight=v_proj_weight,
+        o_proj_weight=o_proj_weight,
+        in_features=in_features,
+    )
 
 
 def run_multihead_self_attention_with_rope(
@@ -163,13 +185,13 @@ def run_multihead_self_attention_with_rope(
     num_heads: int,
     max_seq_len: int,
     theta: float,
-    q_proj_weight: Float[Tensor, " d_k d_in"],
-    k_proj_weight: Float[Tensor, " d_k d_in"],
-    v_proj_weight: Float[Tensor, " d_v d_in"],
-    o_proj_weight: Float[Tensor, " d_model d_v"],
-    in_features: Float[Tensor, " ... sequence_length d_in"],
+    q_proj_weight: Float[Tensor, " d_model d_model"],
+    k_proj_weight: Float[Tensor, " d_model d_model"],
+    v_proj_weight: Float[Tensor, " d_model d_model"],
+    o_proj_weight: Float[Tensor, " d_model d_model"],
+    in_features: Float[Tensor, " ... sequence_length d_model"],
     token_positions: Int[Tensor, " ... sequence_length"] | None = None,
-) -> Float[Tensor, " ... sequence_length d_out"]:
+) -> Float[Tensor, " ... sequence_length d_model"]:
     """
     Given the key, query, and value projection weights of a naive unbatched
     implementation of multi-head attention, return the output of an optimized batched
@@ -184,18 +206,28 @@ def run_multihead_self_attention_with_rope(
         num_heads (int): Number of heads to use in multi-headed attention.
         max_seq_len (int): Maximum sequence length to pre-cache if your implementation does that.
         theta (float): RoPE parameter.
-        q_proj_weight (Float[Tensor, "d_k d_in"]): Weights for the Q projection
-        k_proj_weight (Float[Tensor, "d_k d_in"]): Weights for the K projection
-        v_proj_weight (Float[Tensor, "d_k d_in"]): Weights for the V projection
-        o_proj_weight (Float[Tensor, "d_model d_v"]): Weights for the output projection
-        in_features (Float[Tensor, "... sequence_length d_in"]): Tensor to run your implementation on.
+        q_proj_weight (Float[Tensor, "d_model d_model"]): Weights for the Q projection
+        k_proj_weight (Float[Tensor, "d_model d_model"]): Weights for the K projection
+        v_proj_weight (Float[Tensor, "d_model d_model"]): Weights for the V projection
+        o_proj_weight (Float[Tensor, "d_model d_model"]): Weights for the output projection
+        in_features (Float[Tensor, "... sequence_length d_model"]): Tensor to run your implementation on.
         token_positions (Int[Tensor, " ... sequence_length"] | None): Optional tensor with the positions of the tokens
 
     Returns:
-        Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
+        Float[Tensor, " ... sequence_length d_model"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    return my_run_multihead_self_attention_with_rope(
+        d_model=d_model,
+        num_heads=num_heads,
+        q_proj_weight=q_proj_weight,
+        k_proj_weight=k_proj_weight,
+        v_proj_weight=v_proj_weight,
+        o_proj_weight=o_proj_weight,
+        in_features=in_features,
+        rope_theta=theta,
+        token_positions=token_positions,
+    )
 
 
 def run_rope(
@@ -217,7 +249,8 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
+    rop = RotaryPositionalEmbedding(theta, d_k, max_seq_len)
+    return rop.forward(in_query_or_key, token_positions)
 
 
 def run_transformer_block(
@@ -290,7 +323,8 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    from cs336_basics.MyTransformerBlock import run_transformer_block as my_run_transformer_block
+    return my_run_transformer_block(d_model, num_heads, d_ff, max_seq_len, theta, weights, in_features)
 
 
 def run_transformer_lm(
@@ -317,7 +351,7 @@ def run_transformer_lm(
         num_heads (int): Number of heads to use in multi-headed attention. `d_model` must be
             evenly divisible by `num_heads`.
         d_ff (int): Dimensionality of the feed-forward inner layer (section 3.3).
-        rope_theta (float): The RoPE $\Theta$ parameter.
+        rope_theta (float): The RoPE  Theta parameter.
         weights (dict[str, Tensor]): 
             State dict of our reference implementation. {num_layers} refers to an
             integer between `0` and `num_layers - 1` (the layer index).
@@ -372,7 +406,11 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    from cs336_basics.MyLMBlock import MyLMBlock
+    model = MyLMBlock(vocab_size, context_length, d_model, num_layers,
+                      num_heads, d_ff, in_indices, rope_theta=rope_theta)
+    model.load_weights(weights)
+    return model(in_indices)
 
 
 def run_rmsnorm(
@@ -395,7 +433,10 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    return torch.nn.functional.layer_norm(in_features, (d_model,), weights, eps)
+    from cs336_basics.MyRMSNorm import MyRMSNorm
+    rmsnorm = MyRMSNorm(d_model, eps)
+    rmsnorm.weight.data = weights
+    return rmsnorm(in_features)
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
@@ -448,7 +489,8 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+    from cs336_basics.utils import softmax
+    return softmax(in_features, dim)
 
 
 def run_cross_entropy(inputs: Float[Tensor, " batch_size vocab_size"], targets: Int[Tensor, " batch_size"]) -> Float[Tensor, ""]:
@@ -464,7 +506,8 @@ def run_cross_entropy(inputs: Float[Tensor, " batch_size vocab_size"], targets: 
     Returns:
         Float[Tensor, ""]: The average cross-entropy loss across examples.
     """
-    raise NotImplementedError
+    from cs336_basics.utils import cross_entropy
+    return cross_entropy(inputs, targets)
 
 
 def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
@@ -476,14 +519,16 @@ def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm:
 
     The gradients of the parameters (parameter.grad) should be modified in-place.
     """
-    raise NotImplementedError
+    from cs336_basics.utils import get_gradient_clipping_fn
+    get_gradient_clipping_fn(parameters, max_l2_norm)
 
 
 def get_adamw_cls() -> type[torch.optim.Optimizer]:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
     """
-    raise NotImplementedError
+    from cs336_basics.MyAdam import AdamW
+    return AdamW
 
 
 def run_get_lr_cosine_schedule(
@@ -511,7 +556,8 @@ def run_get_lr_cosine_schedule(
     Returns:
         Learning rate at the given iteration under the specified schedule.
     """
-    raise NotImplementedError
+    from cs336_basics.utils import get_lr_cosine_schedule
+    return get_lr_cosine_schedule(it, max_learning_rate, min_learning_rate, warmup_iters, cosine_cycle_iters)
 
 
 def run_save_checkpoint(
