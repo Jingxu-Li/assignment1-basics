@@ -28,23 +28,31 @@ class RotaryPositionalEmbedding(nn.Module):
         self.sin_cached = emb.sin()
 
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
-        # x: (batch_size, seq_len, d_k)
-        # token_positions: (batch_size, seq_len)
+        # x: (batch_size, seq_len, d_k) 或 (batch_size * num_heads, seq_len, d_k)
+        # token_positions: (batch_size, seq_len) 或 (batch_size * num_heads, seq_len)
 
         # 保证缓存长度足够
         max_pos = int(token_positions.max().item()) + 1
         if max_pos > self.max_seq_len_cached:
             self._update_cos_sin_cache(max_pos)
 
-        # 获取每个 token 位置对应的 cos/sin 编码 (batch_size, seq_len, d_k)
+        # 获取每个 token 位置对应的 cos/sin 编码
+        # cos_cached 和 sin_cached 的形状是 (seq_len, d_k)
+        # token_positions 的形状是 (batch_size, seq_len) 或 (batch_size * num_heads, seq_len)
+        # 结果形状是 (batch_size, seq_len, d_k) 或 (batch_size * num_heads, seq_len, d_k)
         cos, sin = self.cos_cached[token_positions], self.sin_cached[token_positions]
         cos1, _ = cos.chunk(2, dim=-1)
         sin1, _ = sin.chunk(2, dim=-1)
 
+        # 确保cos1和sin1的形状与x的批次维度匹配
+        if cos1.shape[0] != x.shape[0]:
+            # 如果批次维度不匹配，需要广播
+            cos1 = cos1.expand(x.shape[0], -1, -1)
+            sin1 = sin1.expand(x.shape[0], -1, -1)
+
         # 偶数位和奇数位分组
         x_even = x[..., ::2]
         x_odd = x[..., 1::2]
-
         # 旋转编码
         rot_even = x_even * cos1 - x_odd * sin1
         rot_odd = x_even * sin1 + x_odd * cos1
