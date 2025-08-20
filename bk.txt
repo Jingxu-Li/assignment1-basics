@@ -1,0 +1,3 @@
+uv config set index-url http://mirrors.aliyun.com/pypi/simple
+uv sync --default-index http://mirrors.aliyun.com/pypi/simple
+source /etc/network_turbo

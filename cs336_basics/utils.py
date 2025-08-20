@@ -3,6 +3,10 @@ from typing import Iterable
 from jaxtyping import Float, Int
 from torch import Tensor
 import torch
+import os
+from typing import BinaryIO, IO
+import numpy as np
+import numpy.typing as npt
 
 
 def softmax(in_features: Float[Tensor, " ..."], dim: int) -> torch.Tensor:
@@ -94,3 +98,62 @@ def get_gradient_clipping_fn(parameters: Iterable[torch.nn.Parameter], max_l2_no
         if p.grad is None:
             continue
         p.grad.mul_(clip_coef)
+
+def get_batch(dataset: npt.NDArray, batch_size: int, context_length: int, device: str) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Get a batch of data from the dataset.
+    
+    Args:
+        dataset: 输入数据集，形状为 (seq_len,)
+        batch_size: 批次大小
+        context_length: 上下文长度
+        device: 设备类型 ('cpu' 或 'cuda')
+        
+    Returns:
+        tuple: (x, y) 其中：
+            - x: 输入序列，形状为 (batch_size, context_length)
+            - y: 目标序列，形状为 (batch_size, context_length)
+    """
+    # 确保数据集长度足够
+    if len(dataset) < context_length + 1:
+        raise ValueError(f"数据集长度 {len(dataset)} 小于 context_length + 1 = {context_length + 1}")
+    
+    # 随机选择起始位置
+    # 确保每个样本都有足够的后续token作为目标
+    max_start_idx = len(dataset) - context_length - 1
+    start_indices = np.random.randint(0, max_start_idx + 1, size=batch_size)
+    
+    # 创建批次数据
+    x = np.zeros((batch_size, context_length), dtype=dataset.dtype)
+    y = np.zeros((batch_size, context_length), dtype=dataset.dtype)
+    
+    for i, start_idx in enumerate(start_indices):
+        # 输入序列：从 start_idx 开始的 context_length 个token
+        x[i] = dataset[start_idx:start_idx + context_length]
+        # 目标序列：从 start_idx + 1 开始的 context_length 个token（向右偏移1）
+        y[i] = dataset[start_idx + 1:start_idx + context_length + 1]
+    
+    # 转换为PyTorch张量并移动到指定设备
+    x_tensor = torch.from_numpy(x).to(device)
+    y_tensor = torch.from_numpy(y).to(device)
+    
+    return x_tensor, y_tensor
+
+def save_checkpoint(model: torch.nn.Module, optimizer: torch.optim.Optimizer, iteration: int, out: str | os.PathLike | BinaryIO | IO[bytes]):
+    """
+    Save the model and optimizer state to a file.
+    """
+    torch.save({
+        'iteration': iteration,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+    }, out)
+
+def load_checkpoint(src: str | os.PathLike | BinaryIO | IO[bytes], model: torch.nn.Module, optimizer: torch.optim.Optimizer):
+    """
+    Load the model and optimizer state from a file.
+    """
+    checkpoint = torch.load(src)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    return checkpoint['iteration']
