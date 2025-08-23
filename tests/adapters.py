@@ -723,37 +723,34 @@ def run_train_bpe(
             print(
                 f"Token frequency merging completed at: {time.time():.3f} (elapsed: {time.time() - start_time:.3f}s)")
 
-            # Initialize pair frequency cache and build pair-to-sequences index
-            pair_freq_cache = defaultdict(int)
-            # pair -> [(seq, pos, freq), ...]
-            pair_to_sequences = defaultdict(list)
-
-            # Initial count of all adjacent pairs and build index
-            for token_seq, freq in token_freq.items():
-                token_length = len(token_seq)-1
-                for i in range(token_length):
-                    pair = (token_seq[i], token_seq[i + 1])
-                    pair_freq_cache[pair] += freq
-                    pair_to_sequences[pair].append((token_seq, i, freq))
-
-            print(
-                f"Pair frequency cache built at: {time.time():.3f} (elapsed: {time.time() - start_time:.3f}s)")
+            # Initialize pair frequency cache and pair-to-tokens mapping
+            pair_freq_cache = {}
+            # Maps each pair to list of (token_seq, freq) tuples that contain it
+            pair_to_tokens = {}
+            # Initial count of all adjacent pairs
+            for token, freq in token_freq.items():
+                for i in range(len(token) - 1):
+                    pair = (token[i], token[i + 1])
+                    pair_freq_cache[pair] = pair_freq_cache.get(pair, 0) + freq
+                    # Track which tokens contain this pair
+                    if pair not in pair_to_tokens:
+                        pair_to_tokens[pair] = []
+                    pair_to_tokens[pair].append((token, freq))
 
             # Perform merges until vocabulary size is reached
             print(f"Starting merge process at: {time.time():.3f}")
             all_merges = []
+            merge_start_time = time.time()
             while len(vocab) < vocab_size:
                 if len(vocab) % 1000 == 0:
-                    print(f"Vocab size: {len(vocab)}")
-                    print(f"Time: {time.time():.3f}")
-                token_freq, vocab, current_id, merges, pair_freq_cache, pair_to_sequences = perform_merge(
-                    token_freq, vocab, current_id, pair_freq_cache, pair_to_sequences)
+                    elapsed_time = time.time() - merge_start_time
+                    print(
+                        f"Vocab size: {len(vocab)}, Elapsed time: {elapsed_time:.2f}s")
+                token_freq, vocab, current_id, merges, pair_freq_cache, pair_to_tokens = perform_merge(
+                    token_freq, vocab, current_id, pair_freq_cache, pair_to_tokens)
                 if not merges:  # If no more merges possible
                     break
                 all_merges.extend(merges)
-
-            print(
-                f"Merge process completed at: {time.time():.3f} (elapsed: {time.time() - start_time:.3f}s)")
 
         return vocab, all_merges
 
@@ -774,11 +771,11 @@ def perform_merge(
     vocab: dict[int, bytes],
     current_id: int,
     pair_freq_cache: dict[tuple[bytes, bytes], int],
-    pair_to_sequences: dict[tuple[bytes, bytes],
-                            list[tuple[tuple[bytes, ...], int, int]]]
-) -> tuple[dict[tuple[bytes, ...], int], dict[int, bytes], int, list[tuple[bytes, bytes]], dict[tuple[bytes, bytes], int], dict[tuple[bytes, bytes], list[tuple[tuple[bytes, ...], int, int]]]]:
+    pair_to_tokens: dict[tuple[bytes, bytes],
+                         list[tuple[tuple[bytes, ...], int]]]
+) -> tuple[dict[tuple[bytes, ...], int], dict[int, bytes], int, list[tuple[bytes, bytes]], dict[tuple[bytes, bytes], int], dict[tuple[bytes, bytes], list[tuple[tuple[bytes, ...], int]]]]:
     if not pair_freq_cache:
-        return token_freq, vocab, current_id, [], pair_freq_cache, pair_to_sequences
+        return token_freq, vocab, current_id, [], pair_freq_cache, pair_to_tokens
 
     # Find the most frequent pair
     most_freq_pair = max(pair_freq_cache.items(), key=lambda x: (x[1], x[0]))
@@ -790,59 +787,91 @@ def perform_merge(
     vocab[current_id] = merged_token
     current_id += 1
 
-    # Use defaultdict for more efficient frequency updates
-    new_token_freq = defaultdict(int)
-    new_pair_freq_cache = defaultdict(int, pair_freq_cache)
+    # Update token frequencies and pair frequencies
+    new_token_freq = token_freq.copy()
+    new_pair_freq_cache = pair_freq_cache.copy()
+    new_pair_to_tokens = pair_to_tokens.copy()
 
     # Remove the frequency of the merged pair
     del new_pair_freq_cache[most_freq_pair[0]]
 
-    # Use pair-to-sequences index to find only relevant sequences
-    relevant_sequences = pair_to_sequences.get(most_freq_pair[0], [])
+    # Only process token sequences that contain the target pair
+    target_pair = most_freq_pair[0]
+    if target_pair not in pair_to_tokens:
+        return new_token_freq, vocab, current_id, merges, new_pair_freq_cache, new_pair_to_tokens
 
-    # Track which sequences we've already processed
-    processed_sequences = set()
+    # Process only the token sequences that contain the target pair
+    for token_seq, freq in pair_to_tokens[target_pair]:
+        if token_seq not in new_token_freq:
+            continue  # Skip if already processed or removed
 
-    # Process each relevant sequence directly
-    for token_seq, pos, freq in relevant_sequences:
-        if token_seq not in token_freq or token_seq in processed_sequences:
-            continue  # Skip if sequence doesn't exist or already processed
+        new_seq = []
+        i = 0
+        while i < len(token_seq):
+            if i < len(token_seq) - 1 and token_seq[i] == first_token and token_seq[i + 1] == second_token:
+                # Update pair frequencies for the new token
+                if i > 0:
+                    # Handle the pair before the merge
+                    prev_token = token_seq[i - 1]
+                    # Remove old pair frequency
+                    old_prev_pair = (prev_token, first_token)
+                    if old_prev_pair in new_pair_freq_cache:
+                        new_pair_freq_cache[old_prev_pair] -= freq
+                        if new_pair_freq_cache[old_prev_pair] <= 0:
+                            del new_pair_freq_cache[old_prev_pair]
+                    # Add new pair frequency
+                    new_prev_pair = (prev_token, merged_token)
+                    new_pair_freq_cache[new_prev_pair] = new_pair_freq_cache.get(
+                        new_prev_pair, 0) + freq
 
-        processed_sequences.add(token_seq)
-        seq_freq = token_freq[token_seq]
-        seq_len = len(token_seq)
+                    # Update pair_to_tokens mapping for new pair
+                    if new_prev_pair not in new_pair_to_tokens:
+                        new_pair_to_tokens[new_prev_pair] = []
 
-        if seq_len < 2:
-            new_token_freq[token_seq] += seq_freq
-            continue
+                if i < len(token_seq) - 2:
+                    # Handle the pair after the merge
+                    next_token = token_seq[i + 2]
+                    # Remove old pair frequency
+                    old_next_pair = (second_token, next_token)
+                    if old_next_pair in new_pair_freq_cache:
+                        new_pair_freq_cache[old_next_pair] -= freq
+                        if new_pair_freq_cache[old_next_pair] <= 0:
+                            del new_pair_freq_cache[old_next_pair]
+                    # Add new pair frequency
+                    new_next_pair = (merged_token, next_token)
+                    new_pair_freq_cache[new_next_pair] = new_pair_freq_cache.get(
+                        new_next_pair, 0) + freq
 
-            # Create new sequence by merging at the specific position
-        new_seq = list(token_seq)  # Convert to list for modification
+                    # Update pair_to_tokens mapping for new pair
+                    if new_next_pair not in new_pair_to_tokens:
+                        new_pair_to_tokens[new_next_pair] = []
 
-        # Update pair frequencies efficiently
-        if pos > 0:
-            prev_token = token_seq[pos - 1]
-            new_pair_freq_cache[(prev_token, first_token)] -= seq_freq
-            new_pair_freq_cache[(prev_token, merged_token)] += seq_freq
-
-        if pos < seq_len - 2:
-            next_token = token_seq[pos + 2]
-            new_pair_freq_cache[(second_token, next_token)] -= seq_freq
-            new_pair_freq_cache[(merged_token, next_token)] += seq_freq
-
-        # Replace the pair at position pos with merged_token
-        new_seq[pos:pos+2] = [merged_token]
+                new_seq.append(merged_token)
+                i += 2
+            else:
+                new_seq.append(token_seq[i])
+                i += 1
 
         # Update token frequency
-        new_token_freq[tuple(new_seq)] += seq_freq
+        new_seq = tuple(new_seq)
+        # Remove old token frequency
+        if token_seq in new_token_freq:
+            del new_token_freq[token_seq]
 
-    # Add sequences that don't contain the target pair (no changes needed)
-    for token_seq, freq in token_freq.items():
-        if token_seq not in processed_sequences:
-            new_token_freq[token_seq] += freq
+        # Add new token frequency
+        if new_seq in new_token_freq:
+            new_token_freq[new_seq] += freq
+        else:
+            new_token_freq[new_seq] = freq
 
-    # Convert defaultdict back to regular dict for return
-    return dict(new_token_freq), vocab, current_id, merges, dict(new_pair_freq_cache), pair_to_sequences
+        # Update pair_to_tokens mapping for the new sequence
+        for i in range(len(new_seq) - 1):
+            pair = (new_seq[i], new_seq[i + 1])
+            if pair not in new_pair_to_tokens:
+                new_pair_to_tokens[pair] = []
+            new_pair_to_tokens[pair].append((new_seq, freq))
+
+    return new_token_freq, vocab, current_id, merges, new_pair_freq_cache, new_pair_to_tokens
 
 
 def find_chunk_boundaries(
@@ -896,13 +925,13 @@ def find_chunk_boundaries(
 
 def testcase1():
     # Enable profiling for this test
-    CONFIG['enable_profiling'] = True
+    CONFIG['enable_profiling'] = False
 
     start_time = time.time()
     vocab, merges = run_train_bpe(
-        input_path="tests/fixtures/corpus.en",
+        input_path="data/TinyStoriesV2-GPT4-valid.txt",
         special_tokens=["<|endoftext|>"],
-        vocab_size=500
+        vocab_size=1000
     )
     elapsed = time.time() - start_time
     print(f"run_train_bpe elapsed time: {elapsed:.2f} seconds")
@@ -1003,4 +1032,4 @@ def save_vocab_and_merges(vocab: dict[int, bytes], merges: list[tuple[bytes, byt
 
 if __name__ == "__main__":
 
-    testcase3()
+    testcase1()
