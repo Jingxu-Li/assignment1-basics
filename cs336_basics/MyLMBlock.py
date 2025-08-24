@@ -9,16 +9,15 @@ from cs336_basics.MyRMSNorm import MyRMSNorm
 
 class MyLMBlock(nn.Module):
 
-    def __init__(self, vocab_size, context_length, d_model, num_layers, num_heads, d_ff, in_indices, max_seq_len=2048, rope_theta=10000.0, weights=None):
+    def __init__(self, vocab_size, d_model, num_layers, num_heads, d_ff, in_indices, context_length=2048, rope_theta=10000.0, weights=None):
         super(MyLMBlock, self).__init__()
         self.d_model = d_model
         self.num_heads = num_heads
         self.d_ff = d_ff
-        self.max_seq_len = max_seq_len
         self.rope_theta = rope_theta
         self.transformer_blocks = nn.ModuleList([
             MyTransformerBlock(
-                d_model, num_heads, d_ff, max_seq_len, rope_theta
+                d_model, num_heads, d_ff, context_length, rope_theta
             ) for _ in range(num_layers)
         ])
         self.token_embeddings = MyEmbedding(vocab_size, d_model)

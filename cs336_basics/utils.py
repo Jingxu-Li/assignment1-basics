@@ -37,7 +37,9 @@ def cross_entropy(inputs: Float[Tensor, " batch_size vocab_size"], targets: Int[
 
     # 获取目标类别的log概率
     batch_size = inputs.size(0)
-    target_log_probs = log_softmax[torch.arange(batch_size), targets]
+    # 确保targets是long类型用于索引
+    targets = targets.long()
+    target_log_probs = log_softmax[torch.arange(batch_size, device=inputs.device), targets]
 
     # 计算平均交叉熵损失（注意交叉熵是负对数似然）
     loss = -target_log_probs.mean()

@@ -66,7 +66,7 @@ def run_multihead_self_attention(
 
     # 3. 构造因果mask (causal mask)
     # 使用 torch.triu 创建上三角矩阵，然后反转得到下三角mask
-    causal_mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
+    causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=in_features.device), diagonal=1).bool()
     causal_mask = ~causal_mask  # 反转，True表示可以attend，False表示不能attend
 
     # 扩展到多头格式: (seq_len, seq_len) -> (batch_size, num_heads, seq_len, seq_len)
@@ -205,7 +205,7 @@ def run_multihead_self_attention_with_rope(
 
     # 应用RoPE
     from cs336_basics.RotaryPositionalEmbedding import RotaryPositionalEmbedding
-    rope = RotaryPositionalEmbedding(rope_theta, d_k, seq_len)
+    rope = RotaryPositionalEmbedding(rope_theta, d_k, seq_len, device=in_features.device)
     Q_rope = rope.forward(Q_reshaped, token_positions_reshaped)
     K_rope = rope.forward(K_reshaped, token_positions_reshaped)
 
@@ -215,7 +215,7 @@ def run_multihead_self_attention_with_rope(
 
     # 4. 构造因果mask (causal mask)
     # 使用 torch.triu 创建上三角矩阵，然后反转得到下三角mask
-    causal_mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
+    causal_mask = torch.triu(torch.ones(seq_len, seq_len, device=in_features.device), diagonal=1).bool()
     causal_mask = ~causal_mask  # 反转，True表示可以attend，False表示不能attend
 
     # 扩展到多头格式: (seq_len, seq_len) -> (batch_size, num_heads, seq_len, seq_len)

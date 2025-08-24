@@ -17,4 +17,6 @@ class MyEmbedding(nn.Module):
         # embedding metrix is vocabsize*d_model
         # for each token, select embedding in embedding metrix
         # token_ids is batch*sequence
+        # Ensure token_ids is long type for indexing
+        token_ids = token_ids.long()
         return self.weight[token_ids]

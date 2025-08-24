@@ -1,3 +1,4 @@
-uv config set index-url http://mirrors.aliyun.com/pypi/simple
-uv sync --default-index http://mirrors.aliyun.com/pypi/simple
+uv config set index-url https://pypi.tuna.tsinghua.edu.cn/simple
+uv sync --default-index https://pypi.tuna.tsinghua.edu.cn/simple
 source /etc/network_turbo
+nohup python tests/adapters.py 2>&1 | tee adapters_output.log &

@@ -7,11 +7,188 @@
 
 import json
 import torch
+import os
 from decode import TextGenerator, load_model_and_vocab
+from cs336_basics.utils import load_checkpoint
+from cs336_basics.MyLMBlock import MyLMBlock
+
+
+def load_trained_model():
+    """加载训练好的模型"""
+    print("=== 加载训练好的模型 ===")
+    
+    # 模型路径
+    model_path = "checkpoints/best_model.pt"
+    
+    # 检查模型文件是否存在
+    if not os.path.exists(model_path):
+        print(f"错误：模型文件 {model_path} 不存在")
+        return None, None, None
+    
+    # 模型配置（与训练时使用的配置一致）
+    config = {
+        'vocab_size': 10000,
+        'context_length': 256,
+        'd_model': 512,
+        'num_layers': 4,
+        'num_heads': 16,
+        'd_ff': 1344,
+        'max_seq_len': 2048,
+        'rope_theta': 10000.0
+    }
+    
+    # 加载真实的词汇表
+    vocab_path = "vocab.json"
+    if os.path.exists(vocab_path):
+        with open(vocab_path, 'r', encoding='utf-8') as f:
+            vocab_data = json.load(f)
+        # 转换格式：从 {"0": "token", "1": "token"} 到 {"token": 0, "token": 1}
+        vocab = {token: int(token_id) for token_id, token in vocab_data.items()}
+        print(f"✓ 成功加载词汇表，包含 {len(vocab)} 个token")
+    else:
+        print(f"警告：词汇表文件 {vocab_path} 不存在，使用默认词汇表")
+        # 创建默认词汇表
+        vocab = {}
+        for i in range(config['vocab_size']):
+            vocab[f'token_{i}'] = i
+        
+        # 添加特殊token
+        special_tokens = ['<pad>', '<unk>', '<sos>', '<eos>', '<|endoftext|>']
+        for i, token in enumerate(special_tokens):
+            vocab[token] = config['vocab_size'] - len(special_tokens) + i
+    
+    try:
+        # 创建模型
+        model = MyLMBlock(
+            vocab_size=config['vocab_size'],
+            context_length=config['context_length'],
+            d_model=config['d_model'],
+            num_layers=config['num_layers'],
+            num_heads=config['num_heads'],
+            d_ff=config['d_ff'],
+            max_seq_len=config['max_seq_len'],
+            rope_theta=config['rope_theta'],
+            in_indices=None
+        )
+        
+        # 加载模型权重
+        optimizer = torch.optim.Adam(model.parameters())  # 虚拟优化器
+        start_iter = load_checkpoint(model_path, model, optimizer)
+        print(f"✓ 成功加载模型，训练迭代次数: {start_iter}")
+        
+        return model, vocab, config
+        
+    except Exception as e:
+        print(f"加载模型失败: {e}")
+        return None, None, None
+
+
+def generate_with_trained_model():
+    """使用训练好的模型进行文本生成"""
+    print("=== 使用训练好的模型生成文本 ===")
+    
+    # 加载模型
+    model, vocab, config = load_trained_model()
+    if model is None:
+        print("无法加载模型，退出")
+        return
+    
+    # 设置设备
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"使用设备: {device}")
+    
+    # 创建生成器
+    generator = TextGenerator(model, vocab, device)
+    
+    # 示例提示
+    prompts = [
+        "hello world",
+        "machine learning",
+        "artificial intelligence",
+        "deep learning",
+        "neural network",
+        "transformer model",
+        "attention mechanism",
+        "natural language processing"
+    ]
+    
+    print("\n开始生成文本...")
+    print("=" * 60)
+    
+    # 生成参数
+    max_tokens = 50
+    temperature = 0.8
+    top_p = 0.9
+    
+    for i, prompt in enumerate(prompts, 1):
+        print(f"\n{i}. 提示: '{prompt}'")
+        print("-" * 40)
+        
+        try:
+            generated = generator.generate(
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p
+            )
+            print(f"生成结果: {generated}")
+        except Exception as e:
+            print(f"生成失败: {e}")
+    
+    print("\n" + "=" * 60)
+
+
+def interactive_generation_with_trained_model():
+    """使用训练好的模型进行交互式文本生成"""
+    print("=== 交互式文本生成（使用训练好的模型）===")
+    
+    # 加载模型
+    model, vocab, config = load_trained_model()
+    if model is None:
+        print("无法加载模型，退出")
+        return
+    
+    # 设置设备
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"使用设备: {device}")
+    
+    # 创建生成器
+    generator = TextGenerator(model, vocab, device)
+    
+    print("\n开始交互式生成...")
+    print("输入提示文本，按Ctrl+C退出")
+    print("生成参数：")
+    print("- 最大token数: 50")
+    print("- 温度: 0.8")
+    print("- Top-p: 0.9")
+    print("-" * 50)
+    
+    while True:
+        try:
+            prompt = input("\n请输入提示: ").strip()
+            if not prompt:
+                continue
+            
+            print("生成中...")
+            generated = generator.generate(
+                prompt=prompt,
+                max_tokens=50,
+                temperature=0.8,
+                top_p=0.9
+            )
+            
+            print(f"生成结果: {generated}")
+            print("-" * 50)
+            
+        except KeyboardInterrupt:
+            print("\n退出交互模式")
+            break
+        except Exception as e:
+            print(f"生成失败: {e}")
 
 
 def demo_generation():
-    """演示文本生成功能"""
+    """演示文本生成功能（使用随机权重）"""
     
     # 示例配置（使用小模型进行演示）
     config = {
@@ -130,8 +307,6 @@ def demo_generation():
     }
     
     # 创建模型（未训练的随机权重）
-    from cs336_basics.MyLMBlock import MyLMBlock
-    
     model = MyLMBlock(
         vocab_size=config['vocab_size'],
         context_length=config['context_length'],
@@ -156,7 +331,7 @@ def demo_generation():
         "deep neural network"
     ]
     
-    print("=== 文本生成演示 ===")
+    print("=== 文本生成演示（随机权重）===")
     print("注意：这是使用随机权重模型的演示，生成结果可能没有意义")
     print("在实际使用中，请使用训练好的模型\n")
     
@@ -180,28 +355,39 @@ def demo_generation():
                 print(f"温度 {temp}: 生成失败 - {e}")
         
         print()
+
+
+def main():
+    """主函数"""
+    print("语言模型文本生成演示")
+    print("=" * 50)
     
-    # 演示不同top-p值的效果
-    print("=== Top-p采样演示 ===")
-    prompt = "machine learning"
-    top_p_values = [0.5, 0.7, 0.9, 1.0]
-    
-    print(f"提示: '{prompt}'")
-    print("-" * 40)
-    
-    for p in top_p_values:
+    # 首先尝试使用训练好的模型
+    try:
+        generate_with_trained_model()
+        print("\n" + "=" * 50)
+        
+        # 交互式生成
         try:
-            generated = generator.generate(
-                prompt=prompt,
-                max_tokens=15,
-                temperature=1.0,
-                top_p=p
-            )
-            print(f"Top-p {p}: {generated}")
-        except Exception as e:
-            print(f"Top-p {p}: 生成失败 - {e}")
-    
-    print()
+            interactive_generation_with_trained_model()
+        except KeyboardInterrupt:
+            print("\n退出交互模式")
+        
+    except Exception as e:
+        print(f"使用训练模型失败: {e}")
+        print("回退到随机权重演示...")
+        
+        # 演示基本功能（随机权重）
+        demo_generation()
+        
+        # 尝试使用真实模型
+        demo_with_real_model()
+        
+        # 交互式生成
+        try:
+            interactive_generation()
+        except KeyboardInterrupt:
+            print("\n程序结束")
 
 
 def demo_with_real_model():
@@ -286,7 +472,6 @@ def interactive_generation():
         }
         
         vocab = {'<pad>': 0, '<unk>': 1, '<sos>': 2, '<eos>': 3, '<|endoftext|>': 4}
-        from cs336_basics.MyLMBlock import MyLMBlock
         model = MyLMBlock(
             vocab_size=config['vocab_size'],
             context_length=config['context_length'],
@@ -334,24 +519,6 @@ def interactive_generation():
             break
         except Exception as e:
             print(f"生成失败: {e}")
-
-
-def main():
-    """主函数"""
-    print("语言模型文本生成演示")
-    print("=" * 50)
-    
-    # 演示基本功能
-    demo_generation()
-    
-    # 尝试使用真实模型
-    demo_with_real_model()
-    
-    # 交互式生成
-    try:
-        interactive_generation()
-    except KeyboardInterrupt:
-        print("\n程序结束")
 
 
 if __name__ == '__main__':

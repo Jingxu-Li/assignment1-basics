@@ -34,6 +34,9 @@ def run_scaled_dot_product_attention(
     # Apply mask if provided
     if mask is not None:
         # mask: (..., queries, keys)
+        # Ensure mask is on the same device as attn_scores
+        if mask.device != attn_scores.device:
+            mask = mask.to(attn_scores.device)
         # Set masked positions to -inf so they become 0 after softmax
         attn_scores = attn_scores.masked_fill(mask == 0, float('-inf'))
 

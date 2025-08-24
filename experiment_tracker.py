@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 实验跟踪基础设施
 
@@ -43,7 +42,6 @@ class ExperimentConfig:
     num_layers: int
     num_heads: int
     d_ff: int
-    max_seq_len: int
     rope_theta: float
     
     # 训练参数
@@ -232,47 +230,54 @@ class ExperimentTracker:
             json.dump(self.metrics, f, indent=2)
     
     def plot_loss_curves(self, save_plot: bool = True):
-        """绘制损失曲线"""
+        """Plot loss curves"""
         fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-        fig.suptitle(f'训练曲线 - {self.experiment_name}', fontsize=16)
+        fig.suptitle(f'Training Curves - {self.experiment_name}', fontsize=16)
         
         # 训练损失 vs 迭代次数
         if self.metrics['train_loss']:
             axes[0, 0].plot(self.metrics['iterations'], self.metrics['train_loss'], 
-                           label='训练损失', color='blue')
-            axes[0, 0].set_xlabel('迭代次数')
-            axes[0, 0].set_ylabel('训练损失')
-            axes[0, 0].set_title('训练损失 vs 迭代次数')
+                           label='Training Loss', color='blue')
+            axes[0, 0].set_xlabel('Iterations')
+            axes[0, 0].set_ylabel('Training Loss')
+            axes[0, 0].set_title('Training Loss vs Iterations')
             axes[0, 0].legend()
             axes[0, 0].grid(True)
         
         # 验证损失 vs 迭代次数
-        if self.metrics['val_loss']:
-            axes[0, 1].plot(self.metrics['iterations'], self.metrics['val_loss'], 
-                           label='验证损失', color='red')
-            axes[0, 1].set_xlabel('迭代次数')
-            axes[0, 1].set_ylabel('验证损失')
-            axes[0, 1].set_title('验证损失 vs 迭代次数')
+        if self.metrics['val_loss'] and len(self.metrics['val_loss']) > 0:
+            # 确保x和y轴数据长度匹配
+            if len(self.metrics['iterations']) == len(self.metrics['val_loss']):
+                axes[0, 1].plot(self.metrics['iterations'], self.metrics['val_loss'], 
+                               label='Validation Loss', color='red')
+            else:
+                # 如果长度不匹配，只绘制有验证损失数据的点
+                val_iterations = self.metrics['iterations'][:len(self.metrics['val_loss'])]
+                axes[0, 1].plot(val_iterations, self.metrics['val_loss'], 
+                               label='Validation Loss', color='red')
+            axes[0, 1].set_xlabel('Iterations')
+            axes[0, 1].set_ylabel('Validation Loss')
+            axes[0, 1].set_title('Validation Loss vs Iterations')
             axes[0, 1].legend()
             axes[0, 1].grid(True)
         
         # 训练损失 vs 时间
         if self.metrics['train_loss'] and self.metrics['wallclock_time']:
             axes[1, 0].plot(self.metrics['wallclock_time'], self.metrics['train_loss'], 
-                           label='训练损失', color='blue')
-            axes[1, 0].set_xlabel('时间 (秒)')
-            axes[1, 0].set_ylabel('训练损失')
-            axes[1, 0].set_title('训练损失 vs 时间')
+                           label='Training Loss', color='blue')
+            axes[1, 0].set_xlabel('Time (seconds)')
+            axes[1, 0].set_ylabel('Training Loss')
+            axes[1, 0].set_title('Training Loss vs Time')
             axes[1, 0].legend()
             axes[1, 0].grid(True)
         
         # 学习率 vs 迭代次数
         if self.metrics['learning_rate']:
             axes[1, 1].plot(self.metrics['iterations'], self.metrics['learning_rate'], 
-                           label='学习率', color='green')
-            axes[1, 1].set_xlabel('迭代次数')
-            axes[1, 1].set_ylabel('学习率')
-            axes[1, 1].set_title('学习率 vs 迭代次数')
+                           label='Learning Rate', color='green')
+            axes[1, 1].set_xlabel('Iterations')
+            axes[1, 1].set_ylabel('Learning Rate')
+            axes[1, 1].set_title('Learning Rate vs Iterations')
             axes[1, 1].legend()
             axes[1, 1].grid(True)
         
@@ -281,29 +286,36 @@ class ExperimentTracker:
         if save_plot:
             plot_path = self.experiment_dir / "loss_curves.png"
             plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-            self.logger.info(f"损失曲线已保存到: {plot_path}")
+            self.logger.info(f"Loss curves saved to: {plot_path}")
         
         plt.show()
     
     def plot_perplexity_curve(self, save_plot: bool = True):
-        """绘制困惑度曲线"""
-        if not self.metrics['val_perplexity']:
-            self.logger.warning("没有验证困惑度数据")
+        """Plot perplexity curve"""
+        if not self.metrics['val_perplexity'] or len(self.metrics['val_perplexity']) == 0:
+            self.logger.warning("No validation perplexity data available")
             return
         
         plt.figure(figsize=(10, 6))
-        plt.plot(self.metrics['iterations'], self.metrics['val_perplexity'], 
-                label='验证困惑度', color='purple', linewidth=2)
-        plt.xlabel('迭代次数')
-        plt.ylabel('困惑度')
-        plt.title(f'验证困惑度曲线 - {self.experiment_name}')
+        # 确保x和y轴数据长度匹配
+        if len(self.metrics['iterations']) == len(self.metrics['val_perplexity']):
+            plt.plot(self.metrics['iterations'], self.metrics['val_perplexity'], 
+                    label='Validation Perplexity', color='purple', linewidth=2)
+        else:
+            # 如果长度不匹配，只绘制有困惑度数据的点
+            val_iterations = self.metrics['iterations'][:len(self.metrics['val_perplexity'])]
+            plt.plot(val_iterations, self.metrics['val_perplexity'], 
+                    label='Validation Perplexity', color='purple', linewidth=2)
+        plt.xlabel('Iterations')
+        plt.ylabel('Perplexity')
+        plt.title(f'Validation Perplexity Curve - {self.experiment_name}')
         plt.legend()
         plt.grid(True)
         
         if save_plot:
             plot_path = self.experiment_dir / "perplexity_curve.png"
             plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-            self.logger.info(f"困惑度曲线已保存到: {plot_path}")
+            self.logger.info(f"Perplexity curve saved to: {plot_path}")
         
         plt.show()
     
@@ -485,7 +497,7 @@ class ExperimentManager:
         return pd.DataFrame(results)
     
     def plot_comparison(self, experiment_ids: List[str], metric: str = 'val_loss'):
-        """绘制实验比较图"""
+        """Plot experiment comparison"""
         plt.figure(figsize=(12, 8))
         
         for exp_id in experiment_ids:
@@ -497,9 +509,9 @@ class ExperimentManager:
             except Exception as e:
                 print(f"加载实验 {exp_id} 失败: {e}")
         
-        plt.xlabel('迭代次数')
+        plt.xlabel('Iterations')
         plt.ylabel(metric)
-        plt.title(f'实验比较: {metric}')
+        plt.title(f'Experiment Comparison: {metric}')
         plt.legend()
         plt.grid(True)
         plt.show()

@@ -12,7 +12,7 @@ class RotaryPositionalEmbedding(nn.Module):
 
         # 计算逆频率
         inv_freq = 1.0 / \
-            (self.theta ** (torch.arange(0, self.d_k, 2).float().to(device) / self.d_k))
+            (self.theta ** (torch.arange(0, self.d_k, 2, device=device).float() / self.d_k))
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
         # 初始化缓存
@@ -30,6 +30,10 @@ class RotaryPositionalEmbedding(nn.Module):
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
         # x: (batch_size, seq_len, d_k) 或 (batch_size * num_heads, seq_len, d_k)
         # token_positions: (batch_size, seq_len) 或 (batch_size * num_heads, seq_len)
+
+        # 确保token_positions在正确的设备上
+        if token_positions.device != self.cos_cached.device:
+            token_positions = token_positions.to(self.cos_cached.device)
 
         # 保证缓存长度足够
         max_pos = int(token_positions.max().item()) + 1
@@ -67,6 +71,6 @@ class RotaryPositionalEmbedding(nn.Module):
 
 if __name__ == "__main__":
     x = torch.randn(1, 10, 128)
-    token_positions = torch.arange(10)
-    rop = RotaryPositionalEmbedding(10000, 128, 1024)
+    token_positions = torch.arange(10, device=x.device)
+    rop = RotaryPositionalEmbedding(10000, 128, 1024, device=x.device)
     print(rop(x, token_positions))

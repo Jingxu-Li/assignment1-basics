@@ -1032,4 +1032,4 @@ def save_vocab_and_merges(vocab: dict[int, bytes], merges: list[tuple[bytes, byt
 
 if __name__ == "__main__":
 
-    testcase1()
+    testcase3()
