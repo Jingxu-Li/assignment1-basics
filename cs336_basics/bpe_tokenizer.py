@@ -60,7 +60,9 @@ class MyBpeTokenizer:
             if not segment:
                 continue
             if self.special_tokens and segment in self.special_tokens:
-                result.append(self.token_to_id.get(segment.encode('utf-8')))
+                token_id = self.token_to_id.get(segment.encode('utf-8'))
+                if token_id is not None:
+                    result.append(token_id)
                 continue
 
             # pretokenize
@@ -71,9 +73,12 @@ class MyBpeTokenizer:
             for match_token in matches:
                 tokens.append(match_token.group(0))
 
-            token_result = []
-
             for token in tokens:
+                id = self.token_to_id.get(token.encode('utf-8'))
+                if id is not None:
+                    result.append(id)
+                    continue
+                # 如果token不在vocab中，则进行合并
                 if token in self.token_tuple_result_cache:
                     token_tuple = self.token_tuple_result_cache[token]
                 else:
@@ -87,7 +92,9 @@ class MyBpeTokenizer:
                                     (b''.join(merge),) + token_tuple[i+2:]
                     self.token_tuple_result_cache[token] = token_tuple
                 for token in token_tuple:
-                    result.append(int(self.token_to_id.get(token)))
+                    token_id = self.token_to_id.get(token)
+                    if token_id is not None:
+                        result.append(int(token_id))
         return result
 
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
@@ -101,6 +108,8 @@ class MyBpeTokenizer:
     def decode(self, ids: list[int]) -> str:
         res = b''
         for id in ids:
+            if id not in self.vocab.keys():
+                raise Exception(f"Token ID {id} not found in vocab")
             res += self.vocab[id]
         return res.decode('utf-8', errors='replace')
 
