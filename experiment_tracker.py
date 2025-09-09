@@ -150,7 +150,9 @@ class ExperimentTracker:
     
     def setup_wandb(self, project_name: str):
         """设置wandb"""
+        os.environ["WANDB_BASE_URL"] = "https://api.bandw.top"  
         wandb.init(
+            entity="bg2dph-yingzikeji",
             project=project_name,
             name=self.experiment_name,
             config=self.config.to_dict(),

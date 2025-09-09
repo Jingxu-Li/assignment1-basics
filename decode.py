@@ -20,39 +20,36 @@ from pathlib import Path
 # 导入自定义模块
 from cs336_basics.MyLMBlock import MyLMBlock
 from cs336_basics.utils import load_checkpoint
+from cs336_basics.bpe_tokenizer import MyBpeTokenizer
 
 
 class TextGenerator:
     """文本生成器类"""
     
-    def __init__(self, model: MyLMBlock, vocab: dict, device: str = 'cpu'):
+    def __init__(self, model: MyLMBlock, tokenizer: MyBpeTokenizer, device: str = 'cpu'):
         """
         初始化文本生成器
         
         Args:
             model: 训练好的语言模型
-            vocab: 词汇表字典 {token: id}
+            tokenizer: BPE tokenizer
             device: 设备类型 ('cpu' 或 'cuda')
         """
         self.model = model.to(device)
         self.model.eval()
         self.device = device
-        
-        # 创建反向词汇表 {id: token}
-        self.id_to_token = {v: k for k, v in vocab.items()}
-        self.vocab = vocab
+        self.tokenizer = tokenizer
         
         # 特殊token
         self.endoftext_token = '<|endoftext|>'
-        self.endoftext_id = vocab.get(self.endoftext_token, None)
+        self.endoftext_id = tokenizer.token_to_id.get(self.endoftext_token.encode('utf-8'), None)
         
         if self.endoftext_id is None:
             print(f"警告: 词汇表中未找到 {self.endoftext_token} token")
     
     def tokenize(self, text: str) -> List[int]:
         """
-        简单的tokenization（基于空格分割）
-        在实际应用中，您可能需要使用更复杂的tokenizer
+        使用 MyBpeTokenizer 进行 tokenization
         
         Args:
             text: 输入文本
@@ -60,22 +57,11 @@ class TextGenerator:
         Returns:
             token IDs列表
         """
-        words = text.lower().split()
-        tokens = []
-        
-        for word in words:
-            if word in self.vocab:
-                tokens.append(self.vocab[word])
-            else:
-                # 对于未知词，使用<unk> token
-                unk_id = self.vocab.get('<unk>', 1)
-                tokens.append(unk_id)
-        
-        return tokens
+        return self.tokenizer.encode(text)
     
     def detokenize(self, token_ids: List[int]) -> str:
         """
-        将token IDs转换回文本
+        使用 MyBpeTokenizer 将token IDs转换回文本
         
         Args:
             token_ids: token ID列表
@@ -83,15 +69,7 @@ class TextGenerator:
         Returns:
             生成的文本
         """
-        tokens = []
-        for token_id in token_ids:
-            if token_id in self.id_to_token:
-                token = self.id_to_token[token_id]
-                # 跳过特殊token（除了endoftext）
-                if token not in ['<pad>', '<unk>', '<sos>', '<eos>']:
-                    tokens.append(token)
-        
-        return ' '.join(tokens)
+        return self.tokenizer.decode(token_ids)
     
     def apply_temperature(self, logits: torch.Tensor, temperature: float) -> torch.Tensor:
         """
@@ -198,7 +176,7 @@ class TextGenerator:
         if stop_token is None:
             stop_token = self.endoftext_token
         
-        stop_token_id = self.vocab.get(stop_token, None)
+        stop_token_id = self.tokenizer.token_to_id.get(stop_token.encode('utf-8'), None)
         
         # Tokenize提示
         input_tokens = self.tokenize(prompt)
@@ -258,22 +236,26 @@ class TextGenerator:
         return prompt + " " + completion
 
 
-def load_model_and_vocab(model_path: str, vocab_path: str, 
-                        config: dict, device: str = 'cpu') -> tuple[MyLMBlock, dict]:
+def load_model_and_vocab(model_path: str, vocab_path: str, merges_path: str,
+                        config: dict, device: str = 'cpu') -> tuple[MyLMBlock, MyBpeTokenizer]:
     """
-    加载模型和词汇表
+    加载模型和BPE tokenizer
     
     Args:
         model_path: 模型检查点路径
         vocab_path: 词汇表路径
+        merges_path: merges文件路径
         config: 模型配置
         
     Returns:
-        (model, vocab) 元组
+        (model, tokenizer) 元组
     """
-    # 加载词汇表
-    with open(vocab_path, 'r', encoding='utf-8') as f:
-        vocab = json.load(f)
+    # 加载BPE tokenizer
+    tokenizer = MyBpeTokenizer.from_files(
+        vocab_path, 
+        merges_path, 
+        special_tokens=["<|endoftext|>"]
+    )
     
     # 创建模型
     model = MyLMBlock(
@@ -295,7 +277,7 @@ def load_model_and_vocab(model_path: str, vocab_path: str,
         load_checkpoint(model_path, model, optimizer)
         print(f"模型已从 {model_path} 加载")
     
-    return model, vocab
+    return model, tokenizer
 
 
 def main():
@@ -304,8 +286,10 @@ def main():
     
     # 模型参数
     parser.add_argument('--model_path', type=str, help='模型检查点路径')
-    parser.add_argument('--vocab_path', type=str, default='data/vocabulary.json', 
+    parser.add_argument('--vocab_path', type=str, default='vocab.json', 
                        help='词汇表路径')
+    parser.add_argument('--merges_path', type=str, default='merges.txt',
+                       help='merges文件路径')
     parser.add_argument('--config_path', type=str, help='模型配置文件路径')
     
     # 生成参数
@@ -339,17 +323,17 @@ def main():
             'rope_theta': 10000.0
         }
     
-    # 加载模型和词汇表
+    # 加载模型和tokenizer
     try:
-        model, vocab = load_model_and_vocab(
-            args.model_path, args.vocab_path, config, args.device
+        model, tokenizer = load_model_and_vocab(
+            args.model_path, args.vocab_path, args.merges_path, config, args.device
         )
     except Exception as e:
         print(f"加载模型失败: {e}")
         return
     
     # 创建生成器
-    generator = TextGenerator(model, vocab, args.device)
+    generator = TextGenerator(model, tokenizer, args.device)
     
     # 生成文本
     try:

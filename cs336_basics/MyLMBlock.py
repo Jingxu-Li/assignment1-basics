@@ -15,9 +15,10 @@ class MyLMBlock(nn.Module):
         self.num_heads = num_heads
         self.d_ff = d_ff
         self.rope_theta = rope_theta
+        self.context_length = context_length
         self.transformer_blocks = nn.ModuleList([
             MyTransformerBlock(
-                d_model, num_heads, d_ff, context_length, rope_theta
+                d_model, num_heads, d_ff, self.context_length, rope_theta
             ) for _ in range(num_layers)
         ])
         self.token_embeddings = MyEmbedding(vocab_size, d_model)

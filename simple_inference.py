@@ -9,6 +9,7 @@ import os
 import numpy as np
 from cs336_basics.utils import load_checkpoint, cross_entropy
 from cs336_basics.MyLMBlock import MyLMBlock
+from cs336_basics.bpe_tokenizer import MyBpeTokenizer
 
 
 def load_model_and_vocab():
@@ -30,19 +31,24 @@ def load_model_and_vocab():
         'rope_theta': 10000.0
     }
     
-    # 加载词汇表
+    # 加载词汇表和merges文件
     vocab_path = "vocab.json"
+    merges_path = "merges.txt"
+    
     if not os.path.exists(vocab_path):
         raise FileNotFoundError(f"词汇表文件 {vocab_path} 不存在")
     
-    with open(vocab_path, 'r', encoding='utf-8') as f:
-        vocab_data = json.load(f)
+    if not os.path.exists(merges_path):
+        raise FileNotFoundError(f"merges文件 {merges_path} 不存在")
     
-    # 转换词汇表格式
-    vocab = {token: int(token_id) for token_id, token in vocab_data.items()}
-    id_to_token = {int(token_id): token for token_id, token in vocab_data.items()}
+    # 使用 MyBpeTokenizer 加载词汇表和merges
+    tokenizer = MyBpeTokenizer.from_files(
+        vocab_path, 
+        merges_path, 
+        special_tokens=["<|endoftext|>"]
+    )
     
-    print(f"✓ 成功加载词汇表，包含 {len(vocab)} 个token")
+    print(f"✓ 成功加载BPE tokenizer，包含 {len(tokenizer.vocab)} 个token")
     
     # 创建模型
     model = MyLMBlock(
@@ -52,7 +58,6 @@ def load_model_and_vocab():
         num_layers=config['num_layers'],
         num_heads=config['num_heads'],
         d_ff=config['d_ff'],
-        max_seq_len=config['max_seq_len'],
         rope_theta=config['rope_theta'],
         in_indices=None
     )
@@ -70,44 +75,19 @@ def load_model_and_vocab():
         start_iter = checkpoint.get('iteration', 0)
         print(f"✓ 成功加载模型权重，训练迭代次数: {start_iter}")
     
-    return model, vocab, id_to_token, config
+    return model, tokenizer, config
 
 
-def simple_tokenize(text, vocab):
-    """简单的tokenization"""
-    # 这里使用简单的字符级tokenization
-    # 在实际应用中，您可能需要使用更复杂的tokenizer
-    tokens = []
-    for char in text:
-        if char in vocab:
-            tokens.append(vocab[char])
-        else:
-            # 对于未知字符，使用空格token
-            tokens.append(vocab.get(' ', vocab.get('0', 0)))
-    return tokens
-
-
-def simple_detokenize(token_ids, id_to_token):
-    """简单的detokenization"""
-    text = ""
-    for token_id in token_ids:
-        if token_id in id_to_token:
-            token = id_to_token[token_id]
-            # 跳过控制字符
-            if ord(token) >= 32 or token in ['\n', '\t']:
-                text += token
-    return text
-
-
-def generate_text(model, vocab, id_to_token, prompt, max_tokens=50, temperature=0.8, device='cpu'):
+def generate_text(model, tokenizer, prompt, max_tokens=50, temperature=0.8, device='cpu'):
     """生成文本"""
     model.eval()
     model.to(device)
     
-    # Tokenize prompt
-    input_tokens = simple_tokenize(prompt, vocab)
+    # 使用 MyBpeTokenizer 进行 tokenization
+    input_tokens = tokenizer.encode(prompt)
     if len(input_tokens) == 0:
-        input_tokens = [vocab.get(' ', 0)]
+        # 如果编码结果为空，使用空格token
+        input_tokens = [tokenizer.token_to_id.get(b' ', 0)]
     
     # 转换为tensor
     input_tensor = torch.tensor([input_tokens], dtype=torch.long, device=device)
@@ -141,11 +121,12 @@ def generate_text(model, vocab, id_to_token, prompt, max_tokens=50, temperature=
             input_tensor = torch.tensor([generated_tokens], dtype=torch.long, device=device)
             
             # 检查是否生成了结束token
-            if next_token in [vocab.get('<|endoftext|>', -1), vocab.get('<eos>', -1)]:
+            endoftext_id = tokenizer.token_to_id.get("<|endoftext|>".encode('utf-8'), -1)
+            if next_token == endoftext_id:
                 break
     
-    # Detokenize
-    generated_text = simple_detokenize(generated_tokens, id_to_token)
+    # 使用 MyBpeTokenizer 进行 detokenization
+    generated_text = tokenizer.decode(generated_tokens)
     return generated_text
 
 
@@ -158,16 +139,12 @@ def main():
     print(f"使用设备: {device}")
     
     try:
-        # 加载模型和词汇表
-        model, vocab, id_to_token, config = load_model_and_vocab()
+        # 加载模型和tokenizer
+        model, tokenizer, config = load_model_and_vocab()
         
         # 示例提示
         prompts = [
-            "hello",
-            "machine learning",
-            "artificial intelligence",
-            "deep learning",
-            "neural network"
+            "Once upon a time, there was a boy named Ding. "
         ]
         
         print("\n开始生成文本...")
@@ -179,9 +156,9 @@ def main():
             
             try:
                 generated = generate_text(
-                    model, vocab, id_to_token, prompt,
-                    max_tokens=30,
-                    temperature=0.8,
+                    model, tokenizer, prompt,
+                    max_tokens=256,
+                    temperature=0.1,
                     device=device
                 )
                 print(f"生成结果: {generated}")
@@ -189,34 +166,6 @@ def main():
                 print(f"生成失败: {e}")
         
         print("\n" + "=" * 60)
-        
-        # 交互式生成
-        print("\n=== 交互式生成 ===")
-        print("输入提示文本，按Ctrl+C退出")
-        
-        while True:
-            try:
-                prompt = input("\n请输入提示: ").strip()
-                if not prompt:
-                    continue
-                
-                print("生成中...")
-                generated = generate_text(
-                    model, vocab, id_to_token, prompt,
-                    max_tokens=50,
-                    temperature=0.8,
-                    device=device
-                )
-                
-                print(f"生成结果: {generated}")
-                print("-" * 50)
-                
-            except KeyboardInterrupt:
-                print("\n退出交互模式")
-                break
-            except Exception as e:
-                print(f"生成失败: {e}")
-        
     except Exception as e:
         print(f"错误: {e}")
 

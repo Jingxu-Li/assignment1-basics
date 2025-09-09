@@ -52,7 +52,7 @@ class MemmapDataset(Dataset):
         self.context_length = context_length
         
         # 使用memmap加载数据
-        self.data = np.memmap(data_path, dtype=np.int32, mode='r')
+        self.data = np.memmap(data_path, dtype=np.uint16, mode='r')
         
         # 计算训练集和验证集的分割点
         split_idx = int(len(self.data) * split_ratio)
@@ -90,7 +90,6 @@ class TrainingConfig:
         self.num_layers = kwargs.get('num_layers', 12)
         self.num_heads = kwargs.get('num_heads', 12)
         self.d_ff = kwargs.get('d_ff', 3072)
-        self.max_seq_len = kwargs.get('max_seq_len', 2048)
         self.rope_theta = kwargs.get('rope_theta', 10000.0)
         
         # 训练参数
@@ -134,7 +133,6 @@ class TrainingConfig:
             num_layers=self.num_layers,
             num_heads=self.num_heads,
             d_ff=self.d_ff,
-            max_seq_len=self.max_seq_len,
             rope_theta=self.rope_theta,
             batch_size=self.batch_size,
             max_iters=self.max_iters,
@@ -178,26 +176,45 @@ def setup_logging(log_level: str = 'INFO') -> logging.Logger:
 def evaluate_model(model: nn.Module, dataset: MemmapDataset, batch_size: int, 
                   device: str, num_eval_batches: int = 10) -> Dict[str, float]:
     """评估模型性能"""
-    model.eval()
-    total_loss = 0.0
-    total_tokens = 0
-    
-    with torch.no_grad():
-        for _ in range(num_eval_batches):
-            x, y = dataset.get_val_batch(batch_size, device)
-            logits = model(x)
-            loss = cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
-            
-            total_loss += loss.item() * x.numel()
-            total_tokens += x.numel()
-    
-    avg_loss = total_loss / total_tokens
-    perplexity = torch.exp(torch.tensor(avg_loss)).item()
-    
-    return {
-        'val_loss': avg_loss,
-        'val_perplexity': perplexity
-    }
+    try:
+        model.eval()
+        total_loss = 0.0
+        total_tokens = 0
+        
+        with torch.no_grad():
+            for _ in range(num_eval_batches):
+                try:
+                    x, y = dataset.get_val_batch(batch_size, device)
+                    logits = model(x)
+                    loss = cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
+                    
+                    total_loss += loss.item() * x.numel()
+                    total_tokens += x.numel()
+                except Exception as e:
+                    print(f"评估批次发生错误: {e}")
+                    continue
+        
+        if total_tokens == 0:
+            # 如果所有批次都失败了，返回默认值
+            return {
+                'val_loss': float('inf'),
+                'val_perplexity': float('inf')
+            }
+        
+        avg_loss = total_loss / total_tokens
+        perplexity = torch.exp(torch.tensor(avg_loss)).item()
+        
+        return {
+            'val_loss': avg_loss,
+            'val_perplexity': perplexity
+        }
+    except Exception as e:
+        print(f"评估模型时发生错误: {e}")
+        # 返回默认值
+        return {
+            'val_loss': float('inf'),
+            'val_perplexity': float('inf')
+        }
 
 
 def train_model(config: TrainingConfig):
@@ -240,7 +257,6 @@ def train_model(config: TrainingConfig):
             num_layers=config.num_layers,
             num_heads=config.num_heads,
             d_ff=config.d_ff,
-            max_seq_len=config.max_seq_len,
             rope_theta=config.rope_theta,
             in_indices=None  # 这个参数在forward中不会使用
         ).to(device)
@@ -277,34 +293,58 @@ def train_model(config: TrainingConfig):
         logger.info("开始训练...")
         model.train()
         
+        # 初始化变量，避免UnboundLocalError
+        loss = None
+        grad_norm = None
+        lr = config.learning_rate
+        
         for iter_num in range(start_iter, config.max_iters):
-            # 获取批次数据
-            x, y = dataset.get_train_batch(config.batch_size, device)
-            
-            # 前向传播
-            logits = model(x)
-            loss = cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
-            
-            # 反向传播
-            optimizer.zero_grad()
-            loss.backward()
-            
-            # 计算梯度范数
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
-            
-            # 更新学习率
-            lr = get_lr_cosine_schedule(
-                iter_num,
-                config.learning_rate,
-                config.min_learning_rate,
-                config.warmup_iters,
-                config.max_iters
-            )
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = lr
-            
-            # 优化器步进
-            optimizer.step()
+            try:
+                # 获取批次数据
+                x, y = dataset.get_train_batch(config.batch_size, device)
+                
+                # 前向传播
+                logits = model(x)
+                loss = cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
+                
+                # 反向传播
+                optimizer.zero_grad()
+                loss.backward()
+                
+                # 计算裁剪前梯度范数并使用自定义梯度裁剪函数
+                grads = [p.grad for p in model.parameters() if getattr(p, "grad", None) is not None]
+                if len(grads) > 0:
+                    total_sq = torch.zeros((), device=device)
+                    for g in grads:
+                        total_sq = total_sq + g.detach().float().pow(2).sum()
+                    grad_norm = torch.sqrt(total_sq)
+                else:
+                    grad_norm = torch.tensor(0.0, device=device)
+
+                get_gradient_clipping_fn(model.parameters(), config.grad_clip)
+                
+                # 更新学习率
+                lr = get_lr_cosine_schedule(
+                    iter_num,
+                    config.learning_rate,
+                    config.min_learning_rate,
+                    config.warmup_iters,
+                    config.max_iters
+                )
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = lr
+                
+                # 优化器步进
+                optimizer.step()
+                
+            except Exception as e:
+                logger.error(f"训练迭代 {iter_num} 发生错误: {e}")
+                # 如果发生错误，跳过这次迭代，但确保变量有默认值
+                if loss is None:
+                    loss = torch.tensor(float('inf'))
+                if grad_norm is None:
+                    grad_norm = torch.tensor(0.0)
+                continue
             
             # 记录指标
             val_loss = None
@@ -312,55 +352,74 @@ def train_model(config: TrainingConfig):
             
             # 评估
             if iter_num % config.eval_every == 0:
-                eval_metrics = evaluate_model(model, dataset, config.batch_size, device)
-                val_loss = eval_metrics['val_loss']
-                val_perplexity = eval_metrics['val_perplexity']
-                logger.info(f"验证损失: {val_loss:.4f}, 困惑度: {val_perplexity:.2f}")
-                
-                # 保存最佳模型
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
-                    best_model_path = os.path.join(config.checkpoint_dir, 'best_model.pt')
-                    save_checkpoint(model, optimizer, iter_num, best_model_path)
-                    logger.info(f"保存最佳模型到: {best_model_path}")
-                    tracker.log_experiment_note(f"新的最佳验证损失: {val_loss:.4f}")
+                try:
+                    eval_metrics = evaluate_model(model, dataset, config.batch_size, device)
+                    val_loss = eval_metrics['val_loss']
+                    val_perplexity = eval_metrics['val_perplexity']
+                    logger.info(f"验证损失: {val_loss:.4f}, 困惑度: {val_perplexity:.2f}")
+                    
+                    # 保存最佳模型
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        best_model_path = os.path.join(config.checkpoint_dir, 'best_model.pt')
+                        save_checkpoint(model, optimizer, iter_num, best_model_path)
+                        logger.info(f"保存最佳模型到: {best_model_path}")
+                        tracker.log_experiment_note(f"新的最佳验证损失: {val_loss:.4f}")
+                except Exception as e:
+                    logger.error(f"评估迭代 {iter_num} 发生错误: {e}")
+                    val_loss = None
+                    val_perplexity = None
             
             # 记录指标到实验跟踪器
-            tracker.log_metrics(
-                iteration=iter_num,
-                train_loss=loss.item(),
-                val_loss=val_loss,
-                val_perplexity=val_perplexity,
-                learning_rate=lr,
-                gradient_norm=grad_norm.item()
-            )
+            try:
+                tracker.log_metrics(
+                    iteration=iter_num,
+                    train_loss=loss.item() if loss is not None else float('inf'),
+                    val_loss=val_loss,
+                    val_perplexity=val_perplexity,
+                    learning_rate=lr,
+                    gradient_norm=grad_norm.item() if grad_norm is not None else 0.0
+                )
+            except Exception as e:
+                logger.error(f"记录指标时发生错误: {e}")
             
             # 日志记录
             if iter_num % config.log_every == 0:
-                train_loss = loss.item()
-                logger.info(f"迭代 {iter_num}/{config.max_iters} - 训练损失: {train_loss:.4f} - 学习率: {lr:.6f}")
+                train_loss = loss.item() if loss is not None else float('inf')
+                gn = (grad_norm.item() if grad_norm is not None else 0.0)
+                logger.info(f"迭代 {iter_num}/{config.max_iters} - 训练损失: {train_loss:.4f} - 学习率: {lr:.6f} - 梯度范数: {gn:.4f}")
             
             # 保存检查点
             if iter_num % config.save_every == 0:
-                checkpoint_path = os.path.join(config.checkpoint_dir, f'checkpoint_{iter_num}.pt')
-                save_checkpoint(model, optimizer, iter_num, checkpoint_path)
-                logger.info(f"保存检查点到: {checkpoint_path}")
-                
-                # 更新最新检查点
-                latest_path = os.path.join(config.checkpoint_dir, 'latest.pt')
-                save_checkpoint(model, optimizer, iter_num, latest_path)
+                try:
+                    checkpoint_path = os.path.join(config.checkpoint_dir, f'checkpoint_{iter_num}.pt')
+                    save_checkpoint(model, optimizer, iter_num, checkpoint_path)
+                    logger.info(f"保存检查点到: {checkpoint_path}")
+                    
+                    # 更新最新检查点
+                    latest_path = os.path.join(config.checkpoint_dir, 'latest.pt')
+                    save_checkpoint(model, optimizer, iter_num, latest_path)
+                except Exception as e:
+                    logger.error(f"保存检查点时发生错误: {e}")
         
         # 保存最终模型
-        final_path = os.path.join(config.checkpoint_dir, 'final_model.pt')
-        save_checkpoint(model, optimizer, config.max_iters, final_path)
-        logger.info(f"训练完成！最终模型保存到: {final_path}")
+        try:
+            final_path = os.path.join(config.checkpoint_dir, 'final_model.pt')
+            save_checkpoint(model, optimizer, config.max_iters, final_path)
+            logger.info(f"训练完成！最终模型保存到: {final_path}")
+        except Exception as e:
+            logger.error(f"保存最终模型时发生错误: {e}")
         
         # 记录最终结果
-        tracker.log_experiment_note(f"训练完成，最终训练损失: {loss.item():.4f}")
-        if val_loss is not None:
-            tracker.log_experiment_note(f"最终验证损失: {val_loss:.4f}")
-        if val_perplexity is not None:
-            tracker.log_experiment_note(f"最终困惑度: {val_perplexity:.2f}")
+        try:
+            final_loss = loss.item() if loss is not None else float('inf')
+            tracker.log_experiment_note(f"训练完成，最终训练损失: {final_loss:.4f}")
+            if val_loss is not None:
+                tracker.log_experiment_note(f"最终验证损失: {val_loss:.4f}")
+            if val_perplexity is not None:
+                tracker.log_experiment_note(f"最终困惑度: {val_perplexity:.2f}")
+        except Exception as e:
+            logger.error(f"记录最终结果时发生错误: {e}")
 
 
 def main():
